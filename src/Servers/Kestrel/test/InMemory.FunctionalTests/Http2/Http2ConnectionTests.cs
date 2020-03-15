@@ -230,11 +230,20 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
         [Fact]
         public async Task StreamPool_SingleStream_ReturnedToPool()
         {
-            await InitializeConnectionAsync(_echoApplication);
+            var serverTcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            await InitializeConnectionAsync(async context =>
+            {
+                await serverTcs.Task;
+                await _echoApplication(context);
+            });
 
             Assert.Equal(0, _connection.StreamPool.Count);
 
             await StartStreamAsync(1, _browserRequestHeaders, endStream: true);
+
+            var stream = _connection._streams[1];
+            serverTcs.SetResult(null);
 
             await ExpectAsync(Http2FrameType.HEADERS,
                 withLength: 37,
@@ -252,6 +261,9 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
             Assert.Equal(1, _connection.StreamPool.Count);
 
             await StopConnectionAsync(expectedLastStreamId: 1, ignoreNonGoAwayFrames: false);
+
+            var output = (Http2OutputProducer)stream.Output;
+            await output._dataWriteProcessingTask;
         }
 
         [Fact]
@@ -370,13 +382,20 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
         [QuarantinedTest]
         public async Task StreamPool_StreamIsInvalidState_DontReturnedToPool()
         {
+            var serverTcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+
             await InitializeConnectionAsync(async context =>
             {
+                await serverTcs.Task;
+
                 await context.Response.WriteAsync("Content");
                 throw new InvalidOperationException("Put the stream into an invalid state by throwing after writing to response.");
             });
 
             await StartStreamAsync(1, _browserRequestHeaders, endStream: true);
+
+            var stream = _connection._streams[1];
+            serverTcs.SetResult(null);
 
             await ExpectAsync(Http2FrameType.HEADERS,
                 withLength: 33,
@@ -397,6 +416,9 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
 
             // Stream is not returned to the pool
             Assert.Equal(0, _connection.StreamPool.Count);
+
+            var output = (Http2OutputProducer)stream.Output;
+            await output._dataWriteProcessingTask;
 
             await StopConnectionAsync(expectedLastStreamId: 1, ignoreNonGoAwayFrames: false);
         }
